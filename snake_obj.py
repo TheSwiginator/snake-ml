@@ -1,229 +1,212 @@
 from .game_obj import GameObject
 from .food_obj import Food
 from .constants import *
-from .snake import screen
+from .utils import screen
 import random, pygame
 import numpy as np
-
+from datetime import datetime
 
 class Snake(GameObject):
     _count = 0 # Total number of Snake instances
-    _active_food = [] # Current food active in the generation
-    _starting_food = 6 # THIS IS FOR DEBUGGING PURPOSES ONLY
+    _activeFood = [] # Current food active in the generation
+    _startingFood = 6 # THIS IS FOR DEBUGGING PURPOSES ONLY
 
-    def __init__(self, nn, x=int(WIDTH/2), y=int(HEIGHT/2)):
+    def __init__(self, nn, generation, x=int(WIDTH/2), y=int(HEIGHT/2)):
         # Inherited Instance Variables from GameObject #
         super().__init__(x, y)
 
         # Unique Instance Variables #
-        self.nn = nn # Stores the snakes brain as a NeuralNetwork object
+        self.neuralNetworkObject = nn # Stores the snakes brain as a NeuralNetwork object
         self.fitness = 1 # Tracks the fitness score of the snake
         self.direction = 0 # Provide extra positional data
-        self.body = [] # History of snake's previous positions up to snake's length (food_eaten), acts as a queue
-        self.food_eaten = Snake._starting_food # Tracks the number of food eaten upon birth
-        self.moves = 1 # Tracks the number of steps made since birth
-        self.hungry_moves = 1 # Tracks number of steps made since last meal
+        self.bodyCoordinates = [] # History of snake's previous positions up to snake's length (food_eaten), acts as a queue
+        self.numberOfFoodEaten = Snake._startingFood # Tracks the number of food eaten upon birth
+        self.totalMovesTaken = 1 # Tracks the number of steps made since birth
+        self.hungryMovesTaken = 1 # Tracks number of steps made since last meal
         self.dead = False # Tracks if snake is dead or alive
-        self.death_dist = 0 # Tracks the euclidean distance between the snake and target food upon death
+        self.deathDistanceToFood = 0 # Tracks the euclidean distance between the snake and target food upon death
         self.distances = [500] # Tracks the euclidean distance between the snake and target food at each step
-        self.history = [] # Tracks the snake's position at each step
-        self.hungry_history = []
-
-        # Instance Callbacks #
-        self.update()
+        self.positionHistory = [] # Tracks the snake's position at each step
+        self.hungryHistory = [] # Tracks the snake's hungry moves at each step since last meal
+        self.timeBorn = datetime.timestamp(datetime.now()) # Tracks the time the snake was born
+        self.timeDied = None # Tracks the time the snake died
+        self.generation = generation # Tracks the generation the snake was born in
+        self.startPosition = (x, y) # Tracks the active starting position of the snake
+        self.deathPosition = None # Tracks the position the snake died at
+        self.autoPilot = False # Tracks whether or not the snake is autopiloted
+        self.update() # Intially update the snake's state upon Snake object construction
         Snake._count += 1 # Increment the number of total snakes by 1
 
-    # String representation
-    def __str__(self):
-        return f"Snake ID: {self.nn.id} \nFitness: {self.fitness}\nMoves: {self.moves}\nFood Eaten: {self.food_eaten}\nParents: {self.nn.parents}"
-    
-    # Printable representation
-    def __repr__(self):
-        return self.__str__()
-
-    # Returns whether or not the given 2D coordinates lie within the game space
-    @staticmethod
-    def inBounds(x: int, y: int) -> bool:
-        return x >= 0 and x < WIDTH and y >= 0 and y < HEIGHT
-
     # Compute the snake's next move
-    def think(self, food):
+    def _think(self, food):
         # Capture positional data in numpy array
-        inputs = np.array([
+        brainInputs = np.array([
             self.x, 
             self.y, 
             food.x, 
             food.y, 
-            Snake.inBounds(self.x - 1, self.y), 
-            Snake.inBounds(self.x + 1, self.y), 
-            Snake.inBounds(self.x, self.y - 1), 
-            Snake.inBounds(self.x, self.y + 1),
-            (self.x + 1, self.y) in self.body,
-            (self.x - 1, self.y) in self.body,
-            (self.x, self.y + 1) in self.body,
-            (self.x, self.y - 1) in self.body
+            Snake._inBounds(self.x - 1, self.y), 
+            Snake._inBounds(self.x + 1, self.y), 
+            Snake._inBounds(self.x, self.y - 1), 
+            Snake._inBounds(self.x, self.y + 1),
+            (self.x + 1, self.y) in self.bodyCoordinates,
+            (self.x - 1, self.y) in self.bodyCoordinates,
+            (self.x, self.y + 1) in self.bodyCoordinates,
+            (self.x, self.y - 1) in self.bodyCoordinates
         ])
 
         # Feed the food positional data and snake data into the neural net
-        output = self.nn.feed(inputs)
+        brainOutput = self.neuralNetworkObject.feedForward(brainInputs)
         # Handle neural net output
-        choices = np.argsort(output, axis=0)
-        options = [1, 2, 3, 4]
-        for i in range(len(choices)):
-            '''touches = [GameObject(self.x + i, self.y + j) == self.target_food for i, j in [(0, 1), (0, -1), (1, 0), (-1, 0)]]
-            for j, is_touching in enumerate(touches):
-                if is_touching:
-                    options = []'''
-            options[i] = choices[i]
-
-        touches_food = [GameObject(self.x + i, self.y + j) == self.target_food for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1)]]
-        for i, is_touching in enumerate(touches_food):
-            if is_touching:
-                self.direction = i
+        computedPrecedenceOfChoices = np.argsort(brainOutput, axis=0)[::-1]
+        
+        directionsTouchingFood = [GameObject(self.x + i, self.y + j) == self.targetFood for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1)]]
+        for currentDirection, isCurrentDirectionTouching in enumerate(directionsTouchingFood):
+            if isCurrentDirectionTouching:
+                self.direction = currentDirection
                 return
 
         
-        for index, option in enumerate(options):
-            if abs(self.direction - option) == 2:
+        for currentChoiceIndex, currentChoice in enumerate(computedPrecedenceOfChoices):
+            if abs(self.direction - currentChoice) == 2 and self.direction != currentChoice:
                 continue
 
             # Chance for random path change diminishes as you go down the list of options
-            if random.random() < 0.05 * (1 / (index + 1)):
+            if random.random() < 0.7 * (1 / (currentChoiceIndex + 1)) and self.autoPilot:
                 try:
                     # Don't randomize path if next option hits body
-                    if not [(self.x + i, self.y + j) in self.body for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1)]][index + 1]:
+                    if not [(self.x + i, self.y + j) in self.bodyCoordinates for i, j in [(1, 0), (0, 1), (-1, 0), (0, -1)]][currentChoiceIndex + 1]:
                         continue
                 except IndexError:
                     continue
 
-            self.direction = option
+            self.direction = currentChoice
             break
+        
+        
 
     
     # Compute the euclidean distance between two GameObjects
-    def food_distance(self, food):
+    def _getDistanceToFood(self, food):
         return ((self.x - food.x)**2 + (self.y - food.y)**2)**(1/2)
     
+    def _getDistanceToFoodOnDeath(self):
+        if self.deathPosition is None:
+            return 0
+        
+        initialDistance = ((self.startPosition[0] - self.targetFood.x)**2 + (self.startPosition[1] - self.targetFood.y)**2)**(1/2)
+        finalDistance = ((self.deathPosition[0] - self.targetFood.x)**2 + (self.deathPosition[1] - self.targetFood.y)**2)**(1/2)
+
+        return finalDistance - initialDistance
+    
     # Returns the snake's score
-    def calculate_score(self):
+    def getNumberOfFoodEaten(self):
         '''
         DEBUG NOTE:
         Because we don't want more than 1 food to be present when the starting food score is higher than 1, 
         we must offset the food eaten with our initial food score constant.
         '''
-        return self.food_eaten - Snake._starting_food
+        return self.numberOfFoodEaten - Snake._startingFood
     
     # Returns and sets the fitness score of this snake
-    def calculate_fitness(self) -> int:
-        min_dist = min(self.distances)
-        self.fitness = int(400 / (min_dist + 1)) + int(self.food_eaten**2 * 20)
-        return self.fitness
+    def _calculateFitness(self) -> int:
+        return int(400 / (min(self.distances) + 1)) + int(self.getNumberOfFoodEaten()**2 * 20)
     
-    def calculate_avg_dist(self) -> float:
+    def _calculateAverageDistance(self) -> float:
+        if len(self.distances) == 0:
+            return 0
         return sum(self.distances) / len(self.distances)
     
-    def eat(self):
-        # Increment this snake's total number of moves by 1
-        self.food_eaten += 1
+    # Returns the average number of moves the snake was hungry for
+    def calculateTimeToFood(self) -> float:
+        if len(self.hungryHistory) == 0:
+            return 0
+
+        return sum(self.hungryHistory) / len(self.hungryHistory)
+    
+    def calculateTimeToLive(self) -> float:
+        if self.timeDied is None:
+            return 0
+        
+        return self.timeDied - self.timeBorn
+    
+    def _eat(self):
+        # Increment this snake's total number of food eaten by 1
+        self.numberOfFoodEaten += 1
         # Record number of hungry moves
-        self.hungry_history.append(self.hungry_moves)
+        self.hungryHistory.append(self.hungryMovesTaken)
         # Reset this snake's number of hungry moves to 0
-        self.hungry_moves = 0
+        self.hungryMovesTaken = 0
         # Min distance becomes 0
         self.distances.append(0)
-        # Reset history
-        self.history = []
+        # Reset positionHistory
+        self.positionHistory = []
+        # Reset this snake's starting position to its current position
+        self.startPosition = (self.x, self.y)
 
     # Perform game logic from one step
     def update(self):
         # Verify that there is another available active Food object at this snake's food level
         # Keep appending another Food object to the game's list of active food sources until there is another available active Food object at this snake's food level
-        while len(Snake._active_food) <= self.calculate_score():
-            Snake._active_food.append(Food.spawn())
+        while len(Snake._activeFood) <= self.getNumberOfFoodEaten():
+            Snake._activeFood.append(Food._spawn())
 
         # Update this snake's target food
-        self.target_food = Snake._active_food[self.calculate_score()]
-
-        # Increment this snake's number of moves and moves w/o food by 1
-        self.moves += 1
-        self.hungry_moves += 1
-
-        # Make a decision
-        self.think(self.target_food)
-
-        # Make a move based on this snake's current direction
-        if self.direction == 0:
-            # Move right
-            self.x += 1
-        elif self.direction == 1:
-            # Move down
-            self.y += 1
-        elif self.direction == 2:
-            # Move left
-            self.x -= 1
-        elif self.direction == 3:
-            # Move up
-            self.y -= 1
+        self.targetFood = Snake._activeFood[self.getNumberOfFoodEaten()]
 
         # Check for food collision
-        if self == self.target_food:
-            self.eat()
-            
-        # Update the closest this snake has been to it's target food
-        self.distances.append(self.food_distance(self.target_food))
-        self.history.append((self.x, self.y))
+        if self == self.targetFood:
+            self._eat()
 
         # Update whether or not this snake has died
-        self.dead = self.is_dead()
-        
-        # Add this snake's new position to its body
-        self.body.append((self.x, self.y))
-        # Reduce this snake body's 
-        while len(self.body) > self.food_eaten + 1:
-            # Shed the end of the tail
-            self.body.pop(0)
+        if self._isDead():
+            self.dead = True
+            self.timeDied = datetime.timestamp(datetime.now())
+            self.fitness = self._calculateFitness()
+            return
 
-        
-    
+        # Increment this snake's number of moves and moves w/o food by 1
+        self.totalMovesTaken += 1
+        self.hungryMovesTaken += 1
+
+        # Make a decision
+        self._think(self.targetFood)
+
+        # Enable autopilot if this snake is caught in a loop or if it has eaten food
+        self.autopilot = self._isCaughtInLoop(threshold=3) or self.getNumberOfFoodEaten() != 0
+
+        # Make a move based on this snake's current direction
+        move_set = [(1, 0), (0, 1), (-1, 0), (0, -1)]
+        self.x += move_set[int(self.direction)][0]
+        self.y += move_set[int(self.direction)][1]
+
+        # Update the closest this snake has been to it's target food
+        self.distances.append(self._getDistanceToFood(self.targetFood))
+        self.positionHistory.append((self.x, self.y))
+
+        # Update the snake's body coordinates
+        self.bodyCoordinates.append((self.x, self.y))
+        while len(self.bodyCoordinates) > self.numberOfFoodEaten + 1:
+            self.bodyCoordinates.pop(0)
 
     # Returns whether or not the snake is dead
-    def is_dead(self) -> bool:
-        touching_body = (self.x, self.y) in self.body[:-1] # Die if touching self
-        starve = self.hungry_moves > 10000000 # Die if too many moves w/o food
-        out_of_bounds = not Snake.inBounds(self.x, self.y) # Die if snake goes out of game bounds
-        loop_detected = self.loop_detection(3) # Die if snake loops back on itself
-        return touching_body or starve or out_of_bounds or loop_detected
-
-    # Returns an identical Snake object (minus fitness score)
-    def clone(self):
-        # Construct Snake object with cloned NeuralNetwork object, and this snake's game coordinates
-        snake = Snake(self.nn.clone(), self.x, self.y)
-        # Mirror the direction
-        snake.direction = self.direction
-        # Mirror the body
-        snake.body = self.body.copy()
-        # Mirror the dead status
-        snake.dead = self.dead
-        # Mirror 
-        snake.food_eaten = self.food_eaten
-        snake.moves = self.moves
-        return snake
+    def _isDead(self) -> bool:
+        isSnakeTouchingItself = (self.x, self.y) in self.bodyCoordinates[:-1] # Die if touching self
+        isSnakeStarving = self.hungryMovesTaken > 10000000 # Die if too many moves w/o food
+        isSnakeOutOfBounds = not Snake._inBounds(self.x, self.y) # Die if snake goes out of game bounds
+        
+        return isSnakeTouchingItself or isSnakeStarving or isSnakeOutOfBounds
     
     # Draws visual representation of this Snake object to the running pygame window
-    def draw(self):
-        # Snakes that have eaten the most food off their generation are the brightest
-        main_wieght = int((self.calculate_score() + 1) / len(Snake._active_food) * 255)
-        
+    def _draw(self):
         # Draw the body
         count = 0
-        for x, y in self.body:
+        for x, y in self.bodyCoordinates:
             count += 1
             try:
-                # Points in the body get darker the closer they are to the end
-                tail_weight = int(count / len(self.body) * 32 + int((self.calculate_score() + 1) / len(Snake._active_food) * 128))
                 # Draw rect to screen
-                if self.calculate_score() + 1 >= len(Snake._active_food):
-                    pygame.draw.rect(screen, (self.nn.id.r, self.nn.id.g, self.nn.id.b), (x * SCALE, y * SCALE, SCALE, SCALE))
+                if self.getNumberOfFoodEaten() + 1 >= len(Snake._activeFood):
+                    pygame.draw.rect(screen, (self.neuralNetworkObject.id.r, self.neuralNetworkObject.id.g, self.neuralNetworkObject.id.b), (x * SCALE, y * SCALE, SCALE, SCALE))
                 else:
                     pygame.draw.rect(screen, (20, 20, 20), (x * SCALE, y * SCALE, SCALE, SCALE))
             except ValueError:
@@ -231,13 +214,26 @@ class Snake(GameObject):
             
         # Draw the head of the snake
         try:
-            if self.calculate_score() + 1 >= len(Snake._active_food):
-                pygame.draw.rect(screen, (self.nn.id.r, 255, self.nn.id.b), (self.x * SCALE, self.y * SCALE, SCALE, SCALE))
+            if self.getNumberOfFoodEaten() + 1 >= len(Snake._activeFood):
+                pygame.draw.rect(screen, (self.neuralNetworkObject.id.r, 255, self.neuralNetworkObject.id.b), (self.x * SCALE, self.y * SCALE, SCALE, SCALE))
             else:
                 pygame.draw.rect(screen, (60, 60, 60), (self.x * SCALE, self.y * SCALE, SCALE, SCALE))
         except ValueError:
             pass
 
-    def loop_detection(self, threshold) -> bool:
-        return self.history.count((self.x, self.y)) > threshold
+    def _isCaughtInLoop(self, threshold) -> bool:
+        return self.positionHistory.count((self.x, self.y)) > threshold
+    
+    # String representation
+    def __str__(self):
+        return f"Snake(X: {self.x} Y: {self.y})\nFitness: {self.fitness}\nIs Dead?: {self.dead}\nNumber of Food Eaten: {self.numberOfFoodEaten}"
+    
+    # Printable representation
+    def __repr__(self):
+        return self.__str__()
+
+    # Returns whether or not the given 2D coordinates lie within the game space
+    @staticmethod
+    def _inBounds(x: int, y: int) -> bool:
+        return x >= 0 and x < WIDTH and y >= 0 and y < HEIGHT
 

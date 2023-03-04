@@ -1,126 +1,65 @@
-import numpy as np
-import pygame, os, json, sys, time
+import numpy as np, json, sys, time, pygame, os, glob
 from .constants import *
-from .population_sl import SLPopulation
-from .population_dl import DLPopulation
+from .population import SLPopulation
 from .snake_obj import Snake
 from .food_obj import Food
-from .snake import screen
-import matplotlib.pyplot as plt
+from .utils import screen, clock
+from datetime import datetime
 
+# The SLPopulation is an that computes and stores snake analytics for a current simulation
+population = SLPopulation(100, 12, 16, 4, 0.5) # Constructs a new population object
+filename = None # File name of the desired loaded json file, containing the snake populations' neural net info and generation info
 
-# Intialize pygame window for plotting average distance graphs
-pygame.init()
-pygame.display.set_caption("Snake AI")
-graph_screen = pygame.display.set_mode((WIDTH * SCALE, HEIGHT * SCALE))
+# Check if the user chooses to load the most recent json data
+if len(sys.argv) == 1:
+    # Get list of json files in the sl_data directory
+    files = glob.glob('./snake-ml/sl_data/*.json')
+    # Verify that there is a save in the directory to load from
+    if len(files) != 0:
+        # Sort the files by created date and parse the most recent file string for the filename
+        filename = max(files, key=os.path.getctime).split("\\")[1]
+        print(f"No filename parameter was specified. Loading from most recent population from {filename}")
 
-clock = pygame.time.Clock()
-# Set record mode
-write_interval = 1
-write_location = ""
-write_mode = False
+# Check if the user wishes to load a specific json file
+if len(sys.argv) == 2:
+    # Accept the file path as a command-line input
+    filename = sys.argv[1]
+    print(f"File parameter specified. Loading from {filename}")
 
-def bad_args_msg():
-    print("Invalid read/write arguments, exiting...")
-    time.sleep(2)
-    exit()
-
-try:
-    if sys.argv[1] == "write":
-        write_mode = True
-        nn_mode = sys.argv[2]
-        write_location = sys.argv[3]
-        write_interval = int(sys.argv[4])
-    elif sys.argv[1] == "read":
-        nn_mode = sys.argv[2]
-        write_location = sys.argv[3]
-    else:
-        bad_args_msg()
-    if sys.argv[2] == "sl":
-        nn_mode = "sl"
-    elif sys.argv[2] == "dl":
-        nn_mode = "dl"
-    else:
-        bad_args_msg()
-except IndexError:
-    bad_args_msg()
-
-os.system("cls")
-print(f"Write mode: {write_mode}\nWrite interval: every {write_interval} generations\nReading/Write at: ./{write_location}")
-time.sleep(2)
-# Create the population
-if nn_mode == "sl":
-    population = SLPopulation(100, 12, 16, 4, 0.5)
-elif nn_mode == "dl":
-    population = DLPopulation(100, 12, 16, 16, 4, 0.5)
+# Check if the user neither has an existing savepoint nor provided a specifc file path
+if filename is None:
+    # Warn the user
+    print("Warning: No savepoints have been located in the current directory. Population will start fresh.")
 else:
-    bad_args_msg()
-# Load game state and preserve progress
-
-population.load_from_json(write_location)
-initial_generation = population.generation
-time.sleep(2)
-# Create the snakes
-snakes = [population.get_random() for _ in range(population.size)]
-
-stat_distance = []
-stat_fitness = []
+    # Load the json data in the current SLPopulation object
+    population.loadJSON(filename)
+    
+time.sleep(5)
 
 # Main loop
-while True:
+run = True
+while run:
     try:
-        # handle events
+        # handle pygame events
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 run = False
-
-        if population.generation % write_interval == 0 and population.generation > 0 and write_mode:
-            population.save_to_json(write_location)
         
-
         # Check if all the snakes are dead
-        if all([snake.dead for snake in snakes]):
-            # Store old PR
-            old_best = population.best
-            # Calculate the fitness of each snake
-            for snake in snakes:
-                snake.calculate_fitness()
-            
-            # Ensure the next generational best is an improvement on last generation
-            if population.best.fitness < old_best.fitness:
-                population.population.append(old_best)
-                population.best = old_best
-            #population.fitness_decay()
-            # Plot the fitness of the best snake
-            stat_distance.append(population.get_average_distance())
-            if len(stat_distance) > 100:
-                stat_distance.pop(0)
-            # Natural selection
-            population.natural_selection()
-            # Create new snakes
-            snakes = [population.get_random() for _ in range(population.size)]
+        if population.areAllSnakesDead():
+            # Perform natural selection on the current population of snakes
+            population.naturalSelection()
+            # Reset number of Food objects to 0
             Food._count = 0
-            Snake._active_food = [Food(Snake._active_food[-1].x, Snake._active_food[-1].y)]
-            
-
-        # Loop through all the snakes
-        for snake in snakes:
-            # If the snake is not dead
-            if not snake.dead:
-                # Update
-                snake.update()
-
-        # Draw the background
+            # Most recent Food object created gets get carried over to new list of active Food objects
+            Snake._activeFood = [Food(Snake._activeFood[-1].x, Snake._activeFood[-1].y)]
+        
+        # Update all the live snakes in the simulation
+        population.updatePopulation()
+        # Fill screen with black
         screen.fill((0, 0, 0))
-        for food in Snake._active_food:
-            food.draw()
-        # Loop through all the snakes
-        for snake in snakes:
-            # If the snake is not dead
-            if not snake.dead:
-                # Draw the snake
-                snake.draw()
-
+        # Draw draw the all the Game Objects
+        population.draw()
         # Print Population Stats
         os.system("cls")
         print(population)
@@ -129,9 +68,15 @@ while True:
         # Set the frame rate
         clock.tick(60)
     except KeyboardInterrupt:
-        break
+        # Pressing Ctrl+C will cause the simulation to autosave then exit the program
+        run = False
 
-# Plot the avg points
-plt.plot([*range(initial_generation, population.generation)], stat_distance)
-plt.xlim(initial_generation, population.generation)
-plt.show()
+# Generic file naming scheme
+PATH = f"population_{population.generation}.json"
+print(f"Saving population to {PATH}...")
+# Save population data to new json file
+if population.saveJSON(PATH) != None:
+    print("Save complete!")
+else:
+    print("ERROR: Save failed!")
+    time.sleep(10)

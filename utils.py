@@ -1,3 +1,10 @@
+import pygame
+from .constants import *
+
+
+screen = pygame.display.set_mode((WIDTH * SCALE, HEIGHT * SCALE)) # Opens pygame window
+clock = pygame.time.Clock() # Stores game clock
+
 class RGB:
     def __init__(self, r, g, b):
         self.r = r
@@ -20,7 +27,3 @@ class RGB:
         self.r = r
         self.g = g
         self.b = b
-
-    
-if __name__ == "__main__":
-    print(RGB(180, 90, 25).to_hex())
